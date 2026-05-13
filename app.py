@@ -1,7 +1,7 @@
 import os
 import zipfile
 from io import BytesIO
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import fitz
 import pandas as pd
@@ -26,11 +26,29 @@ def load_contacts_csv(filename):
 
 st.set_page_config(page_title="Calculateur de dalles quartz", layout="wide")
 
+from datetime import datetime, timedelta
+
+
 def check_password():
+    SESSION_TIMEOUT_MINUTES = 60
+
     if "password_ok" not in st.session_state:
         st.session_state.password_ok = False
 
+    if "last_activity" not in st.session_state:
+        st.session_state.last_activity = None
+
     if st.session_state.password_ok:
+        if st.session_state.last_activity:
+            elapsed = datetime.now() - st.session_state.last_activity
+
+            if elapsed > timedelta(minutes=SESSION_TIMEOUT_MINUTES):
+                st.session_state.password_ok = False
+                st.session_state.last_activity = None
+                st.warning("Session expirée. Veuillez vous reconnecter.")
+                st.rerun()
+
+        st.session_state.last_activity = datetime.now()
         return True
 
     st.title("Les Artisans du Granit")
@@ -42,6 +60,7 @@ def check_password():
     if st.button("Connexion"):
         if password == st.secrets["APP_PASSWORD"]:
             st.session_state.password_ok = True
+            st.session_state.last_activity = datetime.now()
             st.rerun()
         else:
             st.error("Mot de passe incorrect.")
