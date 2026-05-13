@@ -26,6 +26,32 @@ def load_contacts_csv(filename):
 
 st.set_page_config(page_title="Calculateur de dalles quartz", layout="wide")
 
+def check_password():
+    if "password_ok" not in st.session_state:
+        st.session_state.password_ok = False
+
+    if st.session_state.password_ok:
+        return True
+
+    st.title("Les Artisans du Granit")
+    st.subheader("Accès protégé")
+    st.write("Veuillez entrer le mot de passe de l'entreprise.")
+
+    password = st.text_input("Mot de passe", type="password")
+
+    if st.button("Connexion"):
+        if password == st.secrets["APP_PASSWORD"]:
+            st.session_state.password_ok = True
+            st.rerun()
+        else:
+            st.error("Mot de passe incorrect.")
+
+    return False
+
+
+if not check_password():
+    st.stop()
+
 if "calculated" not in st.session_state:
     st.session_state.calculated = False
 
