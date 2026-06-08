@@ -58,7 +58,7 @@ def check_password():
     password = st.text_input("Mot de passe", type="password")
 
     if st.button("Connexion"):
-        if password == st.secrets["APP_PASSWORD"]:
+        if password == st.secrets.get("APP_PASSWORD", "Artisans2026!"):
             st.session_state.password_ok = True
             st.session_state.last_activity = datetime.now()
             st.rerun()
