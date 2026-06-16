@@ -1,4 +1,4 @@
-﻿nom,telephone,courriel
-François Poulin,873-498-1378,francois.p@lesartisansdugranit.com
-François Thibodeau Therrien,873-498-4344,francois.t.t@lesartisansdugranit.com
-Josée Nadeau,873-498-1384,josee@lesartisansdugranit.com
+﻿nom,telephone,courriel,commission_residentiel,commission_multilogement
+François Poulin,873-498-1378,francois.p@lesartisansdugranit.com,2.5,1
+François Thibodeau Therrien,873-498-4344,francois.t.t@lesartisansdugranit.com,2.5,1
+Josée Nadeau,873-498-1384,josee@lesartisansdugranit.com,2.5,1

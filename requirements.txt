@@ -4,3 +4,4 @@ matplotlib
 reportlab
 pypdf
 PyMuPDF
+openpyxl
