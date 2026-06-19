@@ -15,10 +15,37 @@ from pathlib import Path
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib.units import inch
+from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet
 from pricing_config import PRICING_CONFIG
+
+MATERIAL_TYPES = ["Quartz / Granit", "Dekton / Porcelaine"]
+DEFAULT_MATERIAL_TYPE = "Quartz / Granit"
+
+
+def normalize_material_type(value, fallback=DEFAULT_MATERIAL_TYPE):
+    if pd.isna(value) or str(value).strip() == "":
+        return fallback
+
+    material_type = str(value).strip()
+    return material_type if material_type in MATERIAL_TYPES else fallback
+
+
+def get_pricing_for_material_type(type_projet, material_type):
+    material_configs = PRICING_CONFIG[type_projet]["materiaux"]
+    normalized_type = normalize_material_type(material_type)
+
+    if normalized_type not in material_configs:
+        normalized_type = DEFAULT_MATERIAL_TYPE
+
+    return normalized_type, material_configs[normalized_type]
+
+
+def production_cost_from_pricing(pricing):
+    costs = pricing["couts_pc"]
+    return sum(float(costs[key]) for key in ("cnc", "scie", "finition", "installation"))
 
 
 def looks_like_percent(value):
@@ -132,11 +159,16 @@ def charger_catalogues():
         .str.replace("Builder", "builder", regex=False)
     )
 
+    if "Type matériau" not in catalogue.columns:
+        catalogue["Type matériau"] = DEFAULT_MATERIAL_TYPE
+    else:
+        catalogue["Type matériau"] = catalogue["Type matériau"].apply(normalize_material_type)
+
     return catalogue
 
 st.set_page_config(page_title="Calculateur de dalles quartz", layout="wide")
 
-SESSION_TIMEOUT_SECONDS = 60 * 60
+SESSION_TIMEOUT_SECONDS = 120 * 60
 
 def check_password():
     import time
@@ -181,41 +213,11 @@ st.title("Soumission & Calculateur de dalles")
 
 catalogue_groupes = charger_catalogues()
 
-project_name = st.text_input("Nom du projet", value="")
+if "type_projet" not in st.session_state:
+    st.session_state.type_projet = "Résidentiel"
 
-project_date = st.date_input(
-    "Date prévue du projet",
-    value=date.today()
-)
-
-st.header("Type de soumission")
-
-type_projet = st.radio(
-    "Sélectionne le type de projet",
-    ["Résidentiel", "Multilogement"],
-    horizontal=True
-)
-
-if type_projet == "Multilogement":
-    unit_count = st.number_input(
-        "Nombre d'unités",
-        min_value=1,
-        value=1,
-        step=1
-    )
-else:
-    unit_count = 1
-
-if type_projet == "R\u00e9sidentiel":
-    type_materiau = st.radio(
-        "S\u00e9lectionne le type de mat\u00e9riau",
-        ["Quartz / Granit", "Dekton / Porcelaine"],
-        horizontal=True
-    )
-else:
-    type_materiau = "Quartz / Granit"
-
-pricing = PRICING_CONFIG[type_projet]["materiaux"][type_materiau]
+type_projet = st.session_state.type_projet
+_, project_default_pricing = get_pricing_for_material_type(type_projet, DEFAULT_MATERIAL_TYPE)
 st.header("Informations soumission")
 
 sellers_df = load_contacts_csv("vendeurs.csv")
@@ -243,7 +245,7 @@ with col_quote_1:
 sales_commission_default_pct = get_seller_commission_pct(
     seller_default,
     type_projet,
-    pricing
+    project_default_pricing
 )
 
 with col_quote_2:
@@ -277,26 +279,74 @@ with col_quote_2:
         client_discount_pct = 0.0
 
 
-st.header("Co\u00fbts de production au pi\u00b2")
+st.header("Informations du projet")
 
-col1, col2, col3, col4, col5, col6 = st.columns(6)
+project_name = st.text_input("Nom du projet", value="")
+project_date = st.date_input(
+    "Date prévue du projet",
+    value=date.today()
+)
 
-with col1:
-    cost_cnc = st.number_input("CNC ($/pi\u00b2)", value=float(pricing["couts_pc"]["cnc"]), step=0.25)
+use_client_address_for_project = st.session_state.get(
+    "use_client_address_for_project",
+    False,
+)
 
-with col2:
-    cost_saw = st.number_input("Scie ($/pi\u00b2)", value=float(pricing["couts_pc"]["scie"]), step=0.25)
+if use_client_address_for_project:
+    st.session_state.project_address_client_display = client_address
+    st.text_input(
+        "Adresse du projet",
+        disabled=True,
+        key="project_address_client_display",
+    )
+    manual_project_address = st.session_state.get("project_address_manual", "")
+else:
+    manual_project_address = st.text_input(
+        "Adresse du projet",
+        value="",
+        key="project_address_manual",
+    )
 
-with col3:
-    cost_finish = st.number_input("Finition homme ($/pi\u00b2)", value=float(pricing["couts_pc"]["finition"]), step=0.25)
+use_client_address_for_project = st.checkbox(
+    "Utiliser la même adresse que le client",
+    key="use_client_address_for_project",
+)
 
-with col4:
-    cost_install = st.number_input("\u00c9quipe installation ($/pi\u00b2)", value=float(pricing["couts_pc"]["installation"]), step=0.25)
+project_address = (
+    client_address
+    if use_client_address_for_project
+    else manual_project_address
+)
 
-with col5:
+
+st.header("Type de soumission")
+
+type_projet = st.radio(
+    "Sélectionne le type de projet",
+    ["Résidentiel", "Multilogement"],
+    horizontal=True,
+    key="type_projet",
+)
+
+if type_projet == "Multilogement":
+    unit_count = st.number_input(
+        "Nombre d'unités",
+        min_value=1,
+        value=1,
+        step=1
+    )
+else:
+    unit_count = 1
+
+
+st.header("Paramètres du projet")
+
+col_project_param_1, col_project_param_2, col_project_param_3 = st.columns(3)
+
+with col_project_param_1:
     if type_projet == "Multilogement":
         measurement_cost_per_unit = st.number_input(
-            "Prise de mesure ($/unit\u00e9)",
+            "Prise de mesure ($/unité)",
             value=80.0,
             step=5.0
         )
@@ -304,11 +354,11 @@ with col5:
     else:
         measurement_cost = st.number_input(
             "Prise de mesure ($/projet)",
-            value=float(pricing["mesure_projet"]),
+            value=float(project_default_pricing["mesure_projet"]),
             step=25.0
         )
 
-with col6:
+with col_project_param_2:
     sales_commission_pct = st.number_input(
         "Commission vente (%)",
         value=float(sales_commission_default_pct),
@@ -316,15 +366,87 @@ with col6:
         key=f"sales_commission_{selected_seller}_{type_projet}"
     ) / 100
 
-production_cost_per_sqft = cost_cnc + cost_saw + cost_finish + cost_install
-
-st.info(f"Co\u00fbt de production total : {production_cost_per_sqft:.2f} $/pi\u00b2")
+with col_project_param_3:
+    designer_commission_default_pct = get_client_percent_default(
+        client_default,
+        "commission_designer",
+        0.0
+    )
+    designer_commission_pct = st.number_input(
+        "Commission designer (%)",
+        min_value=0.0,
+        max_value=30.0,
+        value=float(designer_commission_default_pct),
+        step=0.5,
+        key=f"designer_commission_{selected_client}"
+    ) / 100
 
 if type_projet == "Multilogement":
     st.info(
         f"Prise de mesure totale : {unit_count} unit\u00e9s \u00d7 "
         f"{measurement_cost_per_unit:.2f} $ = {money(measurement_cost)}"
     )
+
+
+def material_cost_inputs(material_type):
+    default_pricing = PRICING_CONFIG[type_projet]["materiaux"][material_type]
+    default_costs = default_pricing["couts_pc"]
+
+    st.subheader(material_type)
+    cost_columns = st.columns(4)
+
+    with cost_columns[0]:
+        cnc = st.number_input("CNC ($/pi²)", value=float(default_costs["cnc"]), step=0.25, key=f"{type_projet}_{material_type}_cnc")
+    with cost_columns[1]:
+        saw = st.number_input("Scie ($/pi²)", value=float(default_costs["scie"]), step=0.25, key=f"{type_projet}_{material_type}_scie")
+    with cost_columns[2]:
+        finish = st.number_input("Finition homme ($/pi²)", value=float(default_costs["finition"]), step=0.25, key=f"{type_projet}_{material_type}_finition")
+    with cost_columns[3]:
+        installation = st.number_input("Installation ($/pi²)", value=float(default_costs["installation"]), step=0.25, key=f"{type_projet}_{material_type}_installation")
+
+    return {
+        "cnc": cnc,
+        "scie": saw,
+        "finition": finish,
+        "installation": installation,
+    }
+
+
+def material_pricing_inputs(material_type, material_costs):
+    default_pricing = PRICING_CONFIG[type_projet]["materiaux"][material_type]
+
+    st.subheader(f"Paramètres {material_type}")
+    sale_columns = st.columns(3)
+    with sale_columns[0]:
+        base_price = st.number_input("Prix de vente de base ($/pi²)", value=float(default_pricing["prix_base_pc"]), step=1.0, key=f"{type_projet}_{material_type}_prix_base_pc")
+    with sale_columns[1]:
+        margin_pct = st.number_input("Marge matière (%)", value=float(default_pricing["marge_matiere_pct"] * 100), step=1.0, key=f"{type_projet}_{material_type}_marge_matiere_pct") / 100
+    with sale_columns[2]:
+        minimum_profit = st.number_input("Profit net minimum ($/pi²)", value=float(default_pricing["profit_net_min_pc"]), step=1.0, key=f"{type_projet}_{material_type}_profit_net_min_pc")
+
+    return {
+        **default_pricing,
+        "couts_pc": material_costs,
+        "prix_base_pc": base_price,
+        "marge_matiere_pct": margin_pct,
+        "profit_net_min_pc": minimum_profit,
+    }
+
+
+with st.expander("Paramètres avancés par type de matériau", expanded=False):
+    costs_by_material_type = {
+        material_type: material_cost_inputs(material_type)
+        for material_type in MATERIAL_TYPES
+    }
+
+st.header("Paramètres par type de matériau")
+pricing_by_material_type = {
+    material_type: material_pricing_inputs(
+        material_type,
+        costs_by_material_type[material_type],
+    )
+    for material_type in MATERIAL_TYPES
+}
 
 st.header("Choix de dalles / couleurs")
 
@@ -368,6 +490,7 @@ def get_slab_from_catalogue(
         return None
 
     row = ligne.iloc[0]
+    material_type = normalize_material_type(row.get("Type matériau"))
 
     surface_pc = (float(row["Longueur"]) * float(row["Largeur"])) / 144
 
@@ -393,6 +516,7 @@ def get_slab_from_catalogue(
         "Largeur dalle": float(row["Longueur"]),
         "Hauteur dalle": float(row["Largeur"]),
         "Prix par dalle": float(prix_dalle),
+        "Type matériau": material_type,
     }
 
 
@@ -519,7 +643,7 @@ for i in range(1, nb_couleurs + 1):
                 st.error("Prix introuvable dans le catalogue.")
 
     else:
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
 
         with col_m1:
             manual_material = st.text_input(
@@ -554,16 +678,25 @@ for i in range(1, nb_couleurs + 1):
                 key=f"manual_price_{i}"
             )
 
+        with col_m5:
+            manual_material_type = st.selectbox(
+                f"Type matériau manuel {i}",
+                MATERIAL_TYPES,
+                key=f"manual_material_type_{i}"
+            )
+
         if manual_material.strip():
             selected_slabs.append({
                 "Pierre / Couleur": manual_material.strip(),
                 "Largeur dalle": float(manual_width),
                 "Hauteur dalle": float(manual_height),
                 "Prix par dalle": float(manual_price),
+                "Type matériau": manual_material_type,
             })
 
             st.success(
                 f"{manual_material.strip()} | "
+                f"{manual_material_type} | "
                 f"{manual_width} x {manual_height} | "
                 f"{manual_price:.2f} $"
             )
@@ -592,46 +725,6 @@ with col_c:
 with col_d:
     min_remnant_height = st.number_input("Hauteur minimale retaille utile (pouces)", value=22.0, step=1.0)
 
-
-st.header("Paramètres de vente")
-
-col_v1, col_v2, col_v3, col_v4 = st.columns(4)
-
-with col_v1:
-    base_selling_price = st.number_input(
-        "Prix de vente de base ($/pi²)",
-        value=float(pricing["prix_base_pc"]),
-        step=1.0
-    )
-
-with col_v2:
-    minimum_profit_per_sqft = st.number_input(
-        "Profit net minimum exigé ($/pi²)",
-        value=float(pricing["profit_net_min_pc"]),
-        step=1.0
-    )
-
-with col_v3:
-    material_margin_pct = st.number_input(
-        "Marge sur matière (%)",
-        value=float(pricing["marge_matiere_pct"] * 100),
-        step=1.0
-    ) / 100
-
-with col_v4:
-    designer_commission_default_pct = get_client_percent_default(
-        client_default,
-        "commission_designer",
-        0.0
-    )
-    designer_commission_pct = st.number_input(
-        "Commission designer (%)",
-        min_value=0.0,
-        max_value=30.0,
-        value=float(designer_commission_default_pct),
-        step=0.5,
-        key=f"designer_commission_{selected_client}"
-    ) / 100
 
 if type_projet == "Résidentiel":
 
@@ -665,14 +758,18 @@ else:
     og_pl = 0
 
 if laminage:
-    quote_profile_text = "Profil : carr\u00e9 et lamin\u00e9"
+    proposed_profile_text = "Profil : carr\u00e9 et lamin\u00e9"
 elif og:
-    quote_profile_text = "Profil : OG"
+    proposed_profile_text = "Profil : OG"
 else:
-    quote_profile_text = "Profil : carr\u00e9"
+    proposed_profile_text = "Profil : carr\u00e9"
 
 st.header("Texte inclus dans la soumission")
-st.text(quote_profile_text)
+quote_profile_text = st.text_input(
+    "Profil",
+    value=proposed_profile_text,
+    key=f"quote_profile_text_{int(laminage)}_{int(og)}",
+)
 
 quote_sink_cut_text = st.text_input(
     "D\u00e9coupe pour \u00e9vier et robinet",
@@ -759,7 +856,7 @@ section_1_title, kitchen_data = piece_editor(
     "section_1_title",
     "Cuisine",
     [
-        {"Pierre / Couleur": default_material, "Nom": "Cuisine A", "Longueur": 96.0, "Largeur": 25.5, "Quantité": 1, "Rotation possible": True},
+        {"Pierre / Couleur": default_material, "Nom": "", "Longueur": None, "Largeur": None, "Quantité": None, "Rotation possible": True},
     ],
     "kitchen_editor"
 )
@@ -768,7 +865,7 @@ section_2_title, island_data = piece_editor(
     "section_2_title",
     "Îlot",
     [
-        {"Pierre / Couleur": default_material, "Nom": "Îlot A", "Longueur": 84.0, "Largeur": 36.0, "Quantité": 1, "Rotation possible": True},
+        {"Pierre / Couleur": default_material, "Nom": "", "Longueur": None, "Largeur": None, "Quantité": None, "Rotation possible": True},
     ],
     "island_editor"
 )
@@ -777,7 +874,7 @@ section_3_title, vanity_data = piece_editor(
     "section_3_title",
     "Vanités",
     [
-        {"Pierre / Couleur": second_material, "Nom": "Vanité", "Longueur": 22.0, "Largeur": 36.0, "Quantité": 1, "Rotation possible": True},
+        {"Pierre / Couleur": second_material, "Nom": "", "Longueur": None, "Largeur": None, "Quantité": None, "Rotation possible": True},
     ],
     "vanity_editor"
 )
@@ -786,7 +883,7 @@ section_4_title, section_4_data = piece_editor(
     "section_4_title",
     "Section 4",
     [
-        {"Pierre / Couleur": default_material, "Nom": "", "Longueur": 0.0, "Largeur": 0.0, "Quantité": 1, "Rotation possible": True},
+        {"Pierre / Couleur": default_material, "Nom": "", "Longueur": None, "Largeur": None, "Quantité": None, "Rotation possible": True},
     ],
     "section_4_editor"
 )
@@ -795,7 +892,7 @@ section_5_title, section_5_data = piece_editor(
     "section_5_title",
     "Section 5",
     [
-        {"Pierre / Couleur": default_material, "Nom": "", "Longueur": 0.0, "Largeur": 0.0, "Quantité": 1, "Rotation possible": True},
+        {"Pierre / Couleur": default_material, "Nom": "", "Longueur": None, "Largeur": None, "Quantité": None, "Rotation possible": True},
     ],
     "section_5_editor"
 )
@@ -821,6 +918,7 @@ def create_slab_lookup(df):
                 "width": float(row["Largeur dalle"]),
                 "height": float(row["Hauteur dalle"]),
                 "price": float(row["Prix par dalle"]),
+                "material_type": normalize_material_type(row.get("Type matériau")),
             }
 
     return lookup
@@ -834,12 +932,25 @@ def create_piece_list(df):
         material = str(row["Pierre / Couleur"]).strip()
         name = str(row["Nom"]).strip()
         section = str(row["Section"]).strip() if "Section" in row else ""
-        length = float(row["Longueur"])
-        width = float(row["Largeur"])
-        qty = int(row["Quantité"])
+        length_value = row["Longueur"]
+        width_value = row["Largeur"]
+        qty_value = row["Quantité"]
         rotation_possible = bool(row["Rotation possible"])
 
-        if not material or not name or length <= 0 or width <= 0 or qty <= 0:
+        if (
+            not material
+            or not name
+            or pd.isna(length_value)
+            or pd.isna(width_value)
+            or pd.isna(qty_value)
+        ):
+            continue
+
+        length = float(length_value)
+        width = float(width_value)
+        qty = int(qty_value)
+
+        if length <= 0 or width <= 0 or qty <= 0:
             continue
 
         for _ in range(qty):
@@ -1298,6 +1409,31 @@ def money(value):
 def clean_text(value):
     return str(value).strip() if value else ""
 
+
+def format_project_address_lines(value, max_width=490, font_name="Helvetica", font_size=9):
+    address = clean_text(value).replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+
+    if not address:
+        return []
+
+    words = address.split()
+    lines = []
+    current_line = ""
+
+    for word in words:
+        candidate = f"{current_line} {word}".strip()
+
+        if current_line and pdfmetrics.stringWidth(candidate, font_name, font_size) > max_width:
+            lines.append(current_line)
+            current_line = word
+        else:
+            current_line = candidate
+
+    if current_line:
+        lines.append(current_line)
+
+    return lines
+
 def safe_filename(value):
     cleaned = "".join(c if c.isalnum() or c in ("-", "_", " ") else "_" for c in clean_text(value))
     cleaned = cleaned.strip().replace(" ", "_")
@@ -1314,6 +1450,7 @@ def taxes_from_subtotal(subtotal):
 def build_quote_pdf(
     project_name,
     project_date,
+    project_address,
     project_note,
     quote_profile_text,
     quote_sink_cut_text,
@@ -1371,6 +1508,20 @@ def build_quote_pdf(
     final_canvas.drawString(53, 525, clean_text(client_phone))
     final_canvas.drawString(53, 511, clean_text(requested_by))
 
+    project_address_text = (
+        f"Adresse projet : {clean_text(project_address)}"
+        if clean_text(project_address) else ""
+    )
+    project_address_lines = format_project_address_lines(project_address_text)
+    section_start_y = 452
+
+    if project_address_lines:
+        address_line_y = 493
+
+        for address_line in project_address_lines:
+            final_canvas.drawString(53, address_line_y, address_line)
+            address_line_y -= 14
+
     # date
     final_canvas.drawCentredString(
         505,
@@ -1391,7 +1542,6 @@ def build_quote_pdf(
     )
 
     # lignes tableau
-    section_start_y = 452
     section_line_spacing = 17
     last_section_y = section_start_y
 
@@ -1736,14 +1886,11 @@ def build_production_pdf(project_name, project_date, slab_display_data, requeste
 def calculate_quote_data(
     all_pieces_df,
     slab_options,
-    production_cost_per_sqft,
-    base_selling_price,
-    minimum_profit_per_sqft,
-    material_margin_pct,
     measurement_cost,
     sales_commission_pct,
     designer_commission_pct,
     client_discount_pct,
+    pricing_by_material_type,
     edge_margin,
     saw_width
 ):
@@ -1754,6 +1901,9 @@ def calculate_quote_data(
         return None
 
     materials = sorted(set([p["material"] for p in pieces]))
+    project_total_sqft_for_allocations = sum(p["area"] for p in pieces) / 144
+    global_laminage_total = laminage_pl * 20 if laminage else 0
+    global_og_total = og_pl * 20 if og else 0
 
     section_analysis = {}
     material_rows = []
@@ -1771,6 +1921,9 @@ def calculate_quote_data(
     total_sales_commission = 0
     total_designer_commission = 0
     total_client_discount = 0
+    total_minimum_profit_required = 0
+    total_profit_before_discount = 0
+    display_profit_buffer_per_sqft = 0.005
     split_piece_rows = []
 
     for material in materials:
@@ -1782,6 +1935,18 @@ def calculate_quote_data(
         slab_width_value = slab_info["width"]
         slab_height_value = slab_info["height"]
         slab_price = slab_info["price"]
+        material_type = normalize_material_type(slab_info["material_type"])
+
+        if material_type not in pricing_by_material_type:
+            raise ValueError(
+                f"Le type de matériau '{material_type}' n'est pas disponible dans les paramètres."
+            )
+
+        material_pricing = pricing_by_material_type[material_type]
+        material_production_cost_per_sqft = production_cost_from_pricing(material_pricing)
+        material_base_selling_price = float(material_pricing["prix_base_pc"])
+        material_minimum_profit_per_sqft = float(material_pricing["profit_net_min_pc"])
+        material_margin_pct_value = float(material_pricing["marge_matiere_pct"])
 
         material_pieces = [p for p in pieces if p["material"] == material]
         material_pieces, material_split_rows = split_oversized_pieces_for_material(
@@ -1814,83 +1979,105 @@ def calculate_quote_data(
 
         slab_surface_sqft = slab_sqft * slab_count
         slab_cost_total = slab_count * slab_price
+        gross_loss_sqft = slab_surface_sqft - project_sqft
+        gross_loss_percent = (gross_loss_sqft / slab_surface_sqft) * 100 if slab_surface_sqft > 0 else 0
+        small_project_slab_adjustment = (
+            material_type == DEFAULT_MATERIAL_TYPE
+            and project_sqft < 25
+            and gross_loss_percent > 50
+        )
+        adjusted_slab_cost_total = slab_cost_total * 0.50 if small_project_slab_adjustment else slab_cost_total
 
-        fabrication_cost = project_sqft * production_cost_per_sqft
+        material_project_ratio = (
+            project_sqft / project_total_sqft_for_allocations
+            if project_total_sqft_for_allocations > 0 else 0
+        )
+        measurement_cost_allocated = measurement_cost * material_project_ratio
+        options_total = (
+            global_laminage_total + global_og_total
+        ) * material_project_ratio
 
-        material_sale_per_sqft = slab_cost_per_sqft * (1 + material_margin_pct)
-
-        normal_sale_per_sqft = base_selling_price + material_sale_per_sqft
+        fabrication_cost = project_sqft * material_production_cost_per_sqft
+        material_sale_per_sqft = slab_cost_per_sqft * (1 + material_margin_pct_value)
+        normal_sale_per_sqft = material_base_selling_price + material_sale_per_sqft
         normal_sale_total = normal_sale_per_sqft * project_sqft
 
         commission_rate = sales_commission_pct
-        sales_commission = normal_sale_total * commission_rate
+        minimum_sale_cost_factor = 1 - commission_rate - designer_commission_pct
 
-        real_total_cost = (
-            fabrication_cost
-            + slab_cost_total
-            + measurement_cost
-            + sales_commission
-        )
-
-        normal_profit = normal_sale_total - real_total_cost
-        normal_profit_per_sqft = normal_profit / project_sqft if project_sqft > 0 else 0
+        if minimum_sale_cost_factor <= 0:
+            raise ValueError("Les commissions sont trop élevées pour respecter le profit minimum.")
 
         fixed_cost_before_commission = (
             fabrication_cost
-            + slab_cost_total
-            + measurement_cost
+            + adjusted_slab_cost_total
+            + measurement_cost_allocated
         )
+        minimum_profit_total = material_minimum_profit_per_sqft * project_sqft
+        minimum_profit_total_for_pricing = (
+            material_minimum_profit_per_sqft + display_profit_buffer_per_sqft
+        ) * project_sqft
+        total_minimum_profit_required += minimum_profit_total
 
-        minimum_profit_total = minimum_profit_per_sqft * project_sqft
+        normal_sale_before_discount = normal_sale_total + options_total
+        normal_designer_commission = normal_sale_before_discount * designer_commission_pct
+        normal_sales_commission = normal_sale_before_discount * commission_rate
+        normal_real_total_cost = (
+            fixed_cost_before_commission
+            + normal_sales_commission
+            + normal_designer_commission
+        )
+        normal_profit = normal_sale_before_discount - normal_real_total_cost
+        normal_profit_per_sqft = normal_profit / project_sqft if project_sqft > 0 else 0
 
-        minimum_sale_total_required = (
-            fixed_cost_before_commission + minimum_profit_total
-        ) / (1 - commission_rate)
-
-        if normal_sale_total < minimum_sale_total_required:
-            sale_total = minimum_sale_total_required
-            final_sale_per_sqft = sale_total / project_sqft
-        else:
-            sale_total = normal_sale_total
-            final_sale_per_sqft = normal_sale_per_sqft
-        laminage_total = laminage_pl * 20 if laminage else 0
-        og_total = og_pl * 20 if og else 0
-
-        sale_total_avant_commission_designer = sale_total + laminage_total + og_total
-        designer_commission_amount = sale_total_avant_commission_designer * designer_commission_pct
-
-        sale_total_avant_rabais = sale_total_avant_commission_designer + designer_commission_amount
-        client_discount_amount = sale_total_avant_rabais * client_discount_pct
-
-        sale_total = sale_total_avant_rabais - client_discount_amount
-        final_sale_per_sqft = sale_total / project_sqft if project_sqft > 0 else 0
-
-        sales_commission = sale_total * commission_rate
-
+        minimum_sale_before_discount_required = (
+            fixed_cost_before_commission + minimum_profit_total_for_pricing
+        ) / minimum_sale_cost_factor
+        sale_total_before_options = max(
+            normal_sale_total,
+            minimum_sale_before_discount_required - options_total,
+        )
+        sale_total_avant_rabais = sale_total_before_options + options_total
+        designer_commission_amount = sale_total_avant_rabais * designer_commission_pct
+        sales_commission = sale_total_avant_rabais * commission_rate
         real_total_cost = (
             fixed_cost_before_commission
             + sales_commission
             + designer_commission_amount
         )
+        profit_before_discount = sale_total_avant_rabais - real_total_cost
+        total_profit_before_discount += profit_before_discount
 
-        profit = sale_total - real_total_cost
+        client_discount_amount = sale_total_avant_rabais * client_discount_pct
+        sale_total = sale_total_avant_rabais - client_discount_amount
+        final_sale_per_sqft = sale_total / project_sqft if project_sqft > 0 else 0
+        profit = profit_before_discount - client_discount_amount
         profit_per_sqft = profit / project_sqft if project_sqft > 0 else 0
-        sale_adjustment = final_sale_per_sqft - normal_sale_per_sqft
+        profit_before_discount_per_sqft = profit_before_discount / project_sqft if project_sqft > 0 else 0
+        rabais_client_pc = client_discount_amount / project_sqft if project_sqft > 0 else 0
+        sale_adjustment = (
+            (sale_total_before_options / project_sqft) - normal_sale_per_sqft
+            if project_sqft > 0 else 0
+        )
 
         for section_name in sorted(set([p["section"] for p in material_pieces])):
             section_pieces = [p for p in material_pieces if p["section"] == section_name]
             section_sqft = sum(p["area"] for p in section_pieces) / 144
             section_ratio = section_sqft / project_sqft if project_sqft > 0 else 0
+            section_project_ratio = (
+                section_sqft / project_total_sqft_for_allocations
+                if project_total_sqft_for_allocations > 0 else 0
+            )
 
-            section_base_fabrication_cost = section_sqft * production_cost_per_sqft
-            section_measurement_cost = measurement_cost * section_ratio
+            section_base_fabrication_cost = section_sqft * material_production_cost_per_sqft
+            section_measurement_cost = measurement_cost * section_project_ratio
             section_sales_commission = sales_commission * section_ratio
             section_designer_commission = designer_commission_amount * section_ratio
             section_client_discount = client_discount_amount * section_ratio
 
             section_fabrication_cost = section_base_fabrication_cost
 
-            section_slab_cost = slab_cost_total * section_ratio
+            section_slab_cost = adjusted_slab_cost_total * section_ratio
 
             section_total_cost = (
                 section_fabrication_cost
@@ -1900,7 +2087,7 @@ def calculate_quote_data(
                 + section_designer_commission
             )
 
-            section_sale_total = section_sqft * final_sale_per_sqft
+            section_sale_total = sale_total * section_ratio
             section_profit = section_sale_total - section_total_cost
 
             if section_name not in section_analysis:
@@ -1932,9 +2119,9 @@ def calculate_quote_data(
 
         total_project_sqft += project_sqft
         total_slabs += slab_count
-        total_slab_cost += slab_cost_total
+        total_slab_cost += adjusted_slab_cost_total
         total_fabrication_cost += fabrication_cost
-        total_measurement_cost += measurement_cost
+        total_measurement_cost += measurement_cost_allocated
         total_sales_commission += sales_commission
         total_designer_commission += designer_commission_amount
         total_client_discount += client_discount_amount
@@ -1942,11 +2129,9 @@ def calculate_quote_data(
         total_sales += sale_total
         total_slab_surface_sqft += slab_surface_sqft
 
-        gross_loss_sqft = slab_surface_sqft - project_sqft
-        gross_loss_percent = (gross_loss_sqft / slab_surface_sqft) * 100 if slab_surface_sqft > 0 else 0
-
         material_rows.append({
             "Pierre / Couleur": stone_name,
+            "Type matériau": material_type,
             "Dimension dalle": f"{slab_width_value:.0f} x {slab_height_value:.0f}",
             "Prix dalle": money(slab_price),
             "Prix matière / PC": f"{slab_cost_per_sqft:.2f} $",
@@ -1956,19 +2141,26 @@ def calculate_quote_data(
             "PC perte brute": round(gross_loss_sqft, 2),
             "% perte brute": f"{gross_loss_percent:.2f} %",
             "Coût dalles total": money(slab_cost_total),
+            "Coût dalle utilisé": money(adjusted_slab_cost_total),
+            "Ajustement petite surface": "Oui" if small_project_slab_adjustment else "Non",
         })
 
         sales_rows.append({
             "Pierre / Couleur": stone_name,
+            "Type matériau": material_type,
             "PC projet": round(project_sqft, 2),
-            "Coût fabrication": money(fabrication_cost + measurement_cost + sales_commission),
-            "Coût dalles": money(slab_cost_total),
+            "Coût fabrication": money(fabrication_cost + measurement_cost_allocated + sales_commission),
+            "Coût dalles": money(adjusted_slab_cost_total),
+            "Coût dalles réel": money(slab_cost_total),
+            "Ajustement petite surface": "Oui" if small_project_slab_adjustment else "Non",
             "Coût total réel": money(real_total_cost),
             "Prix vente initial / PC": f"{normal_sale_per_sqft:.2f} $",
             "Profit initial / PC": f"{normal_profit_per_sqft:.2f} $",
             "Ajustement / PC": f"{sale_adjustment:.2f} $",
             "Prix vente final / PC": f"{final_sale_per_sqft:.2f} $",
             "Prix total projet": money(sale_total),
+            "Profit avant rabais / PC": f"{profit_before_discount_per_sqft:.2f} $",
+            "Rabais client / PC": f"{rabais_client_pc:.2f} $",
             "Profit final": money(profit),
             "Profit final / PC": f"{profit_per_sqft:.2f} $",
         })
@@ -1991,6 +2183,14 @@ def calculate_quote_data(
     )
     final_profit = total_sales - total_cost
     final_profit_per_sqft = final_profit / total_project_sqft if total_project_sqft > 0 else 0
+    weighted_minimum_profit_per_sqft = (
+        total_minimum_profit_required / total_project_sqft
+        if total_project_sqft > 0 else 0
+    )
+    profit_before_discount_per_sqft = (
+        total_profit_before_discount / total_project_sqft
+        if total_project_sqft > 0 else 0
+    )
 
     requested_rows = create_requested_summary(all_pieces_df)
     placed_rows = create_placed_summary(slab_display_data)
@@ -2019,6 +2219,8 @@ def calculate_quote_data(
         "total_cost": total_cost,
         "final_profit": final_profit,
         "final_profit_per_sqft": final_profit_per_sqft,
+        "minimum_profit_per_sqft": weighted_minimum_profit_per_sqft,
+        "profit_before_discount_per_sqft": profit_before_discount_per_sqft,
         "total_measurement_cost": total_measurement_cost,
         "total_sales_commission": total_sales_commission,
         "designer_commission_pct": designer_commission_pct,
@@ -2318,7 +2520,7 @@ def build_sales_analysis_pdf(project_name, quote_items):
 
     return buffer
 
-def build_quote_zip(project_name, quote_items, comparison_rows):
+def build_quote_zip(project_name, project_address, quote_items, comparison_rows):
     zip_buffer = BytesIO()
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
@@ -2326,6 +2528,7 @@ def build_quote_zip(project_name, quote_items, comparison_rows):
             pdf_buffer = build_quote_pdf(
                 project_name=project_name,
                 project_date=project_date,
+                project_address=item.get("project_address", project_address),
                 project_note=item.get("project_note", ""),
                 quote_profile_text=item.get("quote_profile_text", ""),
                 quote_sink_cut_text=item.get("quote_sink_cut_text", ""),
@@ -2414,14 +2617,11 @@ if st.session_state.calculated:
         quote_data = calculate_quote_data(
             all_pieces_df,
             slab_options,
-            production_cost_per_sqft,
-            base_selling_price,
-            minimum_profit_per_sqft,
-            material_margin_pct,
             measurement_cost,
             sales_commission_pct,
             designer_commission_pct,
             client_discount_pct,
+            pricing_by_material_type,
             edge_margin,
             saw_width
         )
@@ -2589,10 +2789,13 @@ if st.session_state.calculated:
 
     st.table(analysis_df)
 
-    if final_profit_per_sqft < minimum_profit_per_sqft:
+    minimum_profit_per_sqft = quote_data.get("minimum_profit_per_sqft", 0)
+    profit_before_discount_per_sqft = quote_data.get("profit_before_discount_per_sqft", 0)
+
+    if profit_before_discount_per_sqft < minimum_profit_per_sqft:
         st.error("Le profit minimum n'est pas atteint.")
     else:
-        st.success(f"Profit minimum atteint : {final_profit_per_sqft:.2f} $/pi²")
+        st.success(f"Profit minimum avant rabais atteint : {profit_before_discount_per_sqft:.2f} $/pi²")
 
     gross_loss_total = total_slab_surface_sqft - total_project_sqft
     gross_loss_percent_total = (gross_loss_total / total_slab_surface_sqft) * 100 if total_slab_surface_sqft > 0 else 0
@@ -2619,6 +2822,7 @@ if st.session_state.calculated:
 
     quote_items.append({
         "label": "soumission_principale",
+        "project_address": project_address,
         "project_note": project_note,
         "quote_profile_text": quote_profile_text,
         "quote_sink_cut_text": quote_sink_cut_text,
@@ -2670,14 +2874,11 @@ if st.session_state.calculated:
             alt_data = calculate_quote_data(
                 alt_pieces_df,
                 slab_options,
-                production_cost_per_sqft,
-                base_selling_price,
-                minimum_profit_per_sqft,
-                material_margin_pct,
                 measurement_cost,
                 sales_commission_pct,
                 designer_commission_pct,
                 client_discount_pct,
+                pricing_by_material_type,
                 edge_margin,
                 saw_width
             )
@@ -2689,6 +2890,7 @@ if st.session_state.calculated:
 
             quote_items.append({
                 "label": alt_label,
+                "project_address": project_address,
                 "project_note": project_note,
                 "quote_profile_text": quote_profile_text,
                 "quote_sink_cut_text": quote_sink_cut_text,
@@ -2728,7 +2930,7 @@ if st.session_state.calculated:
         except ValueError as error:
             st.error(str(error))
 
-    quote_zip = build_quote_zip(project_name, quote_items, comparison_rows)
+    quote_zip = build_quote_zip(project_name, project_address, quote_items, comparison_rows)
 
     st.download_button(
         label="Télécharger dossier complet (.zip)",

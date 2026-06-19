@@ -15,6 +15,21 @@ PRICING_CONFIG = {
                 "profit_net_min_pc": 5,
                 "laminage_pl": 0,
                 "og_pl": 0,
+            },
+            "Dekton / Porcelaine": {
+                "couts_pc": {
+                    "cnc": 8,
+                    "scie": 7,
+                    "finition": 4,
+                    "installation": 10,
+                },
+                "mesure_projet": 1000,
+                "commission_vente_pct": 0.01,
+                "prix_base_pc": 85,
+                "marge_matiere_pct": 0.50,
+                "profit_net_min_pc": 20,
+                "laminage_pl": 0,
+                "og_pl": 0,
             }
         }
     },
